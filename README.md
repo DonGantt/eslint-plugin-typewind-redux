@@ -1,6 +1,6 @@
 # eslint-plugin-typewind-redux
 
-ESLint rules for [typewind](https://github.com/DonGantt/typewind) and [typewind-v4](https://github.com/DonGantt/typewind), the zero-runtime, type-safe Tailwind CSS wrapper — for projects on either Tailwind v3 (`typewind`) or Tailwind v4 (`typewind-v4`).
+ESLint rules for [typewind](https://github.com/Mokshit06/typewind) and [typewind-v4](https://github.com/DonGantt/typewind), the zero-runtime, type-safe Tailwind CSS wrapper — for projects on either Tailwind v3 (`typewind`) or Tailwind v4 (`typewind-v4`).
 
 ## Installation
 

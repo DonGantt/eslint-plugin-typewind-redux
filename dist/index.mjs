@@ -1,10 +1,3 @@
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
-
 // src/utils/ast.ts
 var KNOWN_PACKAGE_NAMES = /* @__PURE__ */ new Set(["typewind-v4", "typewind"]);
 function findTwLocalName(programNode) {
@@ -111,10 +104,13 @@ var no_grey_alias_default = rule;
 
 // src/utils/metadata.ts
 import * as fs2 from "fs";
+import * as path2 from "path";
+import { createRequire as createRequire2 } from "module";
 
 // src/utils/v3-adapter.ts
 import * as fs from "fs";
 import * as path from "path";
+import { createRequire } from "module";
 var CONFIG_CANDIDATES = ["tailwind.config.js", "tailwind.config.cjs", "tailwind.config.mjs"];
 var MAX_UPWARD_SEARCH_DEPTH = 10;
 function findTailwindConfig(startDir) {
@@ -328,17 +324,18 @@ function buildV3Metadata(cwd = process.cwd()) {
   if (!configPath) return null;
   try {
     const configDir = path.dirname(configPath);
-    const requireFromProject = (id) => __require(__require.resolve(id, { paths: [configDir] }));
+    const projectRequire = createRequire(path.join(configDir, "package.json"));
+    const requireFromProject = (id) => projectRequire(projectRequire.resolve(id, { paths: [configDir] }));
     const resolveConfig = requireFromProject("tailwindcss/resolveConfig");
     const { createContext } = requireFromProject("tailwindcss/lib/lib/setupContextUtils");
     const { generateRules } = requireFromProject("tailwindcss/lib/lib/generateRules");
     const postcss = requireFromProject("postcss");
-    const cacheKeysBefore = new Set(Object.keys(__require.cache));
-    delete __require.cache[__require.resolve(configPath)];
-    const userConfig = __require(configPath);
-    for (const key of Object.keys(__require.cache)) {
+    const cacheKeysBefore = new Set(Object.keys(projectRequire.cache));
+    delete projectRequire.cache[projectRequire.resolve(configPath)];
+    const userConfig = projectRequire(configPath);
+    for (const key of Object.keys(projectRequire.cache)) {
       if (!cacheKeysBefore.has(key) && !key.includes(`${path.sep}node_modules${path.sep}`)) {
-        delete __require.cache[key];
+        delete projectRequire.cache[key];
       }
     }
     const ctx = createContext(resolveConfig(userConfig.default ?? userConfig));
@@ -413,7 +410,8 @@ var cachedV3Fingerprint;
 var lastV3CheckAt = 0;
 function loadV4Metadata() {
   try {
-    const metaPath = __require.resolve("typewind-v4/dist/_metadata.json");
+    const projectRequire = createRequire2(path2.join(process.cwd(), "package.json"));
+    const metaPath = projectRequire.resolve("typewind-v4/dist/_metadata.json");
     const raw = fs2.readFileSync(metaPath, "utf8");
     return JSON.parse(raw);
   } catch {
