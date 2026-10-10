@@ -1,6 +1,6 @@
 {
   "name": "eslint-plugin-typewind-redux",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ESLint rules for typewind (v3) and typewind-v4 — enforce the gray/grey spelling, suggest canonical class names, sort/dedupe/validate tw. chains",
   "repository": {
     "type": "git",
