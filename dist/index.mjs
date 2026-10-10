@@ -403,17 +403,36 @@ function buildV3Metadata(cwd = process.cwd()) {
 
 // src/utils/metadata.ts
 var RETRY_INTERVAL_MS = 2e3;
-var V3_RECHECK_INTERVAL_MS = 2e3;
+var RECHECK_INTERVAL_MS = 2e3;
 var cached;
 var lastFailureAt = 0;
 var cachedV3Fingerprint;
-var lastV3CheckAt = 0;
-function loadV4Metadata() {
+var cachedV4MtimeMs;
+var lastRecheckAt = 0;
+function resolveV4MetadataPath() {
   try {
     const projectRequire = createRequire2(path2.join(process.cwd(), "package.json"));
-    const metaPath = projectRequire.resolve("typewind-v4/dist/_metadata.json");
+    return projectRequire.resolve("typewind-v4/dist/_metadata.json");
+  } catch {
+    return null;
+  }
+}
+function loadV4Metadata() {
+  const metaPath = resolveV4MetadataPath();
+  if (!metaPath) return null;
+  try {
+    const mtimeMs = fs2.statSync(metaPath).mtimeMs;
     const raw = fs2.readFileSync(metaPath, "utf8");
-    return JSON.parse(raw);
+    return { metadata: JSON.parse(raw), mtimeMs };
+  } catch {
+    return null;
+  }
+}
+function getV4MetadataMtime() {
+  const metaPath = resolveV4MetadataPath();
+  if (!metaPath) return null;
+  try {
+    return fs2.statSync(metaPath).mtimeMs;
   } catch {
     return null;
   }
@@ -424,14 +443,21 @@ function hasV3ConfigChanged() {
   if (!current) return true;
   return current.configPath !== cachedV3Fingerprint.configPath || current.mtimeMs !== cachedV3Fingerprint.mtimeMs;
 }
+function hasV4MetadataChanged() {
+  if (cachedV4MtimeMs === void 0) return true;
+  const current = getV4MetadataMtime();
+  if (current === null) return true;
+  return current !== cachedV4MtimeMs;
+}
 function loadTypewindMetadata() {
-  if (cached !== void 0 && cachedV3Fingerprint) {
+  if (cached !== void 0) {
     const now = Date.now();
-    if (now - lastV3CheckAt >= V3_RECHECK_INTERVAL_MS) {
-      lastV3CheckAt = now;
-      if (hasV3ConfigChanged()) {
+    if (now - lastRecheckAt >= RECHECK_INTERVAL_MS) {
+      lastRecheckAt = now;
+      if (cachedV3Fingerprint ? hasV3ConfigChanged() : hasV4MetadataChanged()) {
         cached = void 0;
         cachedV3Fingerprint = void 0;
+        cachedV4MtimeMs = void 0;
       }
     }
   }
@@ -439,14 +465,16 @@ function loadTypewindMetadata() {
   if (lastFailureAt !== 0 && Date.now() - lastFailureAt < RETRY_INTERVAL_MS) return null;
   const v4Result = loadV4Metadata();
   if (v4Result) {
-    cached = v4Result;
+    cached = v4Result.metadata;
+    cachedV4MtimeMs = v4Result.mtimeMs;
+    lastRecheckAt = Date.now();
     return cached;
   }
   const v3Result = buildV3Metadata();
   if (v3Result) {
     cached = v3Result;
     cachedV3Fingerprint = getConfigFingerprint(process.cwd()) ?? void 0;
-    lastV3CheckAt = Date.now();
+    lastRecheckAt = Date.now();
     return cached;
   }
   lastFailureAt = Date.now();
@@ -714,10 +742,27 @@ var rule4 = {
 var no_duplicate_classes_default = rule4;
 
 // src/rules/no-contradicting-classes.ts
-function signatureOf(cssProperties, propName) {
+function isDivideProp(n) {
+  return n === "divide" || n.startsWith("divide_");
+}
+var AXIS_FAMILY_PATTERN = /^(translate|rotate|scale|skew)_([xyz])(_|$)/;
+var UNIFORM_AXIS_FAMILIES = {
+  scale: ["x", "y", "z"],
+  skew: ["x", "y"],
+  translate: ["x", "y"]
+};
+function signaturesOf(cssProperties, propName) {
+  const axisMatch = propName.match(AXIS_FAMILY_PATTERN);
+  if (axisMatch) return [`axis:${axisMatch[1]}:${axisMatch[2]}`];
+  for (const [family, axes] of Object.entries(UNIFORM_AXIS_FAMILIES)) {
+    if (propName === family || propName.startsWith(`${family}_`)) {
+      return axes.map((axis) => `axis:${family}:${axis}`);
+    }
+  }
   const props = cssProperties[propName];
-  if (!props || props.length === 0) return null;
-  return [...props].sort().join(",");
+  if (!props || props.length === 0) return [];
+  const scope = isDivideProp(propName) ? "divide:" : "";
+  return [scope + [...props].sort().join(",")];
 }
 var rule5 = {
   meta: {
@@ -739,23 +784,31 @@ var rule5 = {
       const seenBySignature = /* @__PURE__ */ new Map();
       for (const node of scope) {
         const name = node.property.name;
-        const signature = signatureOf(cssProperties, name);
-        if (signature === null) continue;
-        const prior = seenBySignature.get(signature);
-        if (prior && prior.name !== name) {
-          const properties = cssProperties[name];
-          context.report({
-            node,
-            messageId: "contradictingClasses",
-            data: {
-              name,
-              other: prior.name,
-              properties: properties.join(", "),
-              plural: properties.length > 1 ? "ies" : "y"
+        const signatures = signaturesOf(cssProperties, name);
+        if (signatures.length === 0) continue;
+        let reported = false;
+        for (const signature of signatures) {
+          const prior = seenBySignature.get(signature);
+          if (prior && prior.name !== name) {
+            if (!reported) {
+              const properties = cssProperties[name] ?? [];
+              context.report({
+                node,
+                messageId: "contradictingClasses",
+                data: {
+                  name,
+                  other: prior.name,
+                  properties: properties.join(", "),
+                  plural: properties.length > 1 ? "ies" : "y"
+                }
+              });
+              reported = true;
             }
-          });
+          }
         }
-        seenBySignature.set(signature, { name, node });
+        for (const signature of signatures) {
+          seenBySignature.set(signature, { name, node });
+        }
       }
     }
     return {
