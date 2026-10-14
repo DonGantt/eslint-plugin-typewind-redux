@@ -20,6 +20,8 @@ ruleTester.run('no-contradicting-classes', rule, {
     `import { tw } from 'typewind-v4'; const x = tw.rotate_x_45.skew_x_12;`,
     `import { tw } from 'typewind-v4'; const x = tw.rotate_x_45.rotate_y_45;`,
     `import { tw } from 'typewind-v4'; const x = tw.scale_x_50.scale_y_50;`,
+    `import { tw } from 'typewind-v4'; const x = tw.ring_1.shadow_sm;`,
+    `import { tw } from 'typewind-v4'; const x = tw.shadow_sm.ring_1;`,
   ],
   invalid: [
     {
@@ -56,6 +58,14 @@ ruleTester.run('no-contradicting-classes', rule, {
     },
     {
       code: `import { tw } from 'typewind-v4'; const x = tw.translate_4.translate_x_4;`,
+      errors: [{ messageId: 'contradictingClasses' }],
+    },
+    {
+      code: `import { tw } from 'typewind-v4'; const x = tw.ring_1.ring_2;`,
+      errors: [{ messageId: 'contradictingClasses' }],
+    },
+    {
+      code: `import { tw } from 'typewind-v4'; const x = tw.shadow_sm.shadow_md;`,
       errors: [{ messageId: 'contradictingClasses' }],
     },
   ],
