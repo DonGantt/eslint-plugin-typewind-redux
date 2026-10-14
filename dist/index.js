@@ -606,7 +606,7 @@ function collectChain(head, twLocalName) {
   }
   const isTwRoot = !!cur && cur.type === "Identifier" && cur.name === twLocalName;
   items.reverse();
-  return { items, isTwRoot };
+  return { items, isTwRoot, root: cur };
 }
 function walkTwChains(root, twLocalName, onChain) {
   const visited = /* @__PURE__ */ new Set();
@@ -618,9 +618,9 @@ function walkTwChains(root, twLocalName, onChain) {
     if (!isNode(value)) return;
     const node = value;
     if (isChainLink(node) && !visited.has(node)) {
-      const { items, isTwRoot } = collectChain(node, twLocalName);
+      const { items, isTwRoot, root: chainRoot } = collectChain(node, twLocalName);
       items.forEach(({ node: n }) => visited.add(n));
-      if (isTwRoot) onChain(items);
+      if (isTwRoot) onChain(items, chainRoot);
       for (const { node: itemNode } of items) {
         if (itemNode.type === "CallExpression") {
           for (const arg of itemNode.arguments) walk(arg);
@@ -637,20 +637,6 @@ function walkTwChains(root, twLocalName, onChain) {
     }
   }
   walk(root);
-}
-function splitRuns(items) {
-  const runs = [];
-  let run = [];
-  for (const { node, isCallCallee } of items) {
-    if (!isCallCallee && isPlainPropAccess(node)) {
-      run.push(node);
-    } else if (run.length > 0) {
-      runs.push(run);
-      run = [];
-    }
-  }
-  if (run.length > 0) runs.push(run);
-  return runs;
 }
 function splitScopes(items) {
   const scopes = [];
@@ -669,18 +655,137 @@ function splitScopes(items) {
 
 // src/rules/sort-classes.ts
 var orderMapCache = /* @__PURE__ */ new WeakMap();
-function getOrderMap(classOrder) {
-  let map = orderMapCache.get(classOrder);
+function getOrderMap(order) {
+  let map = orderMapCache.get(order);
   if (!map) {
     map = /* @__PURE__ */ new Map();
-    classOrder.forEach((name, i) => map.set(name, i));
-    orderMapCache.set(classOrder, map);
+    order.forEach((name, i) => map.set(name, i));
+    orderMapCache.set(order, map);
   }
   return map;
 }
-function getClassOrderIndex(orderMap, name) {
-  const idx = orderMap.get(name);
-  return idx === void 0 ? Number.MAX_SAFE_INTEGER : idx;
+var NEGATIVE_SENTINEL = -1;
+var fmtToTailwind = (s) => s.replace(/__/g, ".").replace(/_/g, "-").replace(/^\$/, "@").replace(/\$/, "/");
+function isComputedBracket(node) {
+  return node.type === "MemberExpression" && node.computed === true;
+}
+function firstBareOrderOf(argNode, twLocalName, orderMap) {
+  if (!argNode || !isChainLink(argNode)) return Number.MAX_SAFE_INTEGER;
+  const { items, isTwRoot } = collectChain(argNode, twLocalName);
+  const first = items[0];
+  if (!isTwRoot || !first || first.isCallCallee || !isPlainPropAccess(first.node)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  const name = first.node.property.name;
+  return orderMap.get(name) ?? Number.MAX_SAFE_INTEGER;
+}
+function buildUnits(items, chainStart, twLocalName, orderMap, variantOrderMap) {
+  const units = [];
+  let i = 0;
+  let prevEnd = chainStart;
+  const push = (nodes, kind, tier, order) => {
+    const end = nodes[nodes.length - 1].range[1];
+    units.push({ nodes, kind, tier, order, start: prevEnd, end });
+    prevEnd = end;
+  };
+  while (i < items.length) {
+    const cur = items[i];
+    const node = cur.node;
+    if (cur.isCallCallee && isPlainPropAccess(node)) {
+      const callNode = items[i + 1]?.node;
+      if (callNode && callNode.type === "CallExpression") {
+        const propName = node.property.name;
+        const args = callNode.arguments ?? [];
+        if (args.length === 0 && (propName === "toString" || propName === "valueOf")) {
+          push([node, callNode], "boundary", 0, 0);
+          i += 2;
+          continue;
+        }
+        let variantKey = null;
+        if (propName === "children") variantKey = "*";
+        else if (propName === "descendants") variantKey = "**";
+        else if (propName.endsWith("_named") && args.length === 2) {
+          variantKey = fmtToTailwind(propName.slice(0, -"_named".length));
+        } else if (args.length === 1) {
+          variantKey = fmtToTailwind(propName);
+        }
+        const tier = variantKey !== null ? variantOrderMap?.get(variantKey) : void 0;
+        if (tier !== void 0) {
+          const styleArg = args[args.length - 1];
+          const order = firstBareOrderOf(styleArg, twLocalName, orderMap);
+          push([node, callNode], "call", tier, order);
+        } else {
+          push([node, callNode], "boundary", 0, 0);
+        }
+        i += 2;
+        continue;
+      }
+    }
+    if (!cur.isCallCallee && isPlainPropAccess(node)) {
+      const next = items[i + 1];
+      if (next && !next.isCallCallee && isComputedBracket(next.node)) {
+        push([node, next.node], "boundary", 0, 0);
+        i += 2;
+        continue;
+      }
+      const name = node.property.name;
+      const order = orderMap.get(name);
+      push([node], "bare", NEGATIVE_SENTINEL, order ?? Number.MAX_SAFE_INTEGER);
+      i += 1;
+      continue;
+    }
+    push([node], "boundary", 0, 0);
+    i += 1;
+  }
+  return units;
+}
+function compareUnits(a, b) {
+  if (a.tier !== b.tier) return a.tier - b.tier;
+  return a.order - b.order;
+}
+function unitText(u, text, twLocalName, orderMap, variantOrderMap) {
+  const lastNode = u.nodes[u.nodes.length - 1];
+  if (lastNode.type === "CallExpression") {
+    const args = lastNode.arguments ?? [];
+    const lastArg = args[args.length - 1];
+    if (lastArg && isChainLink(lastArg)) {
+      const inner = collectChain(lastArg, twLocalName);
+      if (inner.isTwRoot && inner.root) {
+        const innerChainStart = inner.root.range[1];
+        const innerText = computeChainText(
+          inner.items,
+          innerChainStart,
+          text,
+          twLocalName,
+          orderMap,
+          variantOrderMap
+        );
+        const [, argEnd] = lastArg.range;
+        return text.slice(u.start, innerChainStart) + innerText + text.slice(argEnd, u.end);
+      }
+    }
+  }
+  return text.slice(u.start, u.end);
+}
+function computeChainText(items, chainStart, text, twLocalName, orderMap, variantOrderMap) {
+  const units = buildUnits(items, chainStart, twLocalName, orderMap, variantOrderMap);
+  const pieces = [];
+  let run = [];
+  const flushRun = () => {
+    const sorted = [...run].sort(compareUnits);
+    for (const u of sorted) pieces.push(unitText(u, text, twLocalName, orderMap, variantOrderMap));
+    run = [];
+  };
+  for (const u of units) {
+    if (u.kind === "boundary") {
+      flushRun();
+      pieces.push(unitText(u, text, twLocalName, orderMap, variantOrderMap));
+      continue;
+    }
+    run.push(u);
+  }
+  flushRun();
+  return pieces.join("");
 }
 var rule3 = {
   meta: {
@@ -698,32 +803,43 @@ var rule3 = {
     const metadata = loadTypewindMetadata();
     if (!metadata || !metadata.classOrder) return {};
     const orderMap = getOrderMap(metadata.classOrder);
+    const variantOrderMap = metadata.variantOrder ? getOrderMap(metadata.variantOrder) : null;
+    const sourceCode = context.getSourceCode();
     let twLocalName = "tw";
     function checkRun(run) {
       if (run.length < 2) return;
-      const names = run.map((n) => n.property.name);
-      const sorted = [...names].sort(
-        (a, b) => getClassOrderIndex(orderMap, a) - getClassOrderIndex(orderMap, b)
-      );
-      if (names.every((n, i) => n === sorted[i])) return;
-      const first = run[0];
-      const last = run[run.length - 1];
+      const sorted = [...run].sort(compareUnits);
+      if (run.every((u, i) => u === sorted[i])) return;
+      const start = run[0].start;
+      const end = run[run.length - 1].end;
+      const lastNode = run[run.length - 1].nodes[run[run.length - 1].nodes.length - 1];
       context.report({
-        node: last,
+        node: lastNode,
         messageId: "unsortedClasses",
         fix(fixer) {
-          const [start] = first.property.range ?? [];
-          const [, end] = last.range ?? [];
-          if (start === void 0 || end === void 0) return null;
-          return fixer.replaceTextRange([start, end], sorted.join("."));
+          const text = sourceCode.getText();
+          const replacement = sorted.map((u) => unitText(u, text, twLocalName, orderMap, variantOrderMap)).join("");
+          return fixer.replaceTextRange([start, end], replacement);
         }
       });
     }
     return {
       Program(node) {
         twLocalName = findTwLocalName(node);
-        walkTwChains(node, twLocalName, (items) => {
-          for (const run of splitRuns(items)) checkRun(run);
+        walkTwChains(node, twLocalName, (items, chainRoot) => {
+          const chainStart = chainRoot?.range?.[1];
+          if (chainStart === void 0) return;
+          const units = buildUnits(items, chainStart, twLocalName, orderMap, variantOrderMap);
+          let run = [];
+          for (const u of units) {
+            if (u.kind === "boundary") {
+              checkRun(run);
+              run = [];
+              continue;
+            }
+            run.push(u);
+          }
+          checkRun(run);
         });
       }
     };
@@ -783,6 +899,9 @@ var no_duplicate_classes_default = rule4;
 function isDivideProp(n) {
   return n === "divide" || n.startsWith("divide_");
 }
+function isRingProp(n) {
+  return n === "ring" || n.startsWith("ring_");
+}
 var AXIS_FAMILY_PATTERN = /^(translate|rotate|scale|skew)_([xyz])(_|$)/;
 var UNIFORM_AXIS_FAMILIES = {
   scale: ["x", "y", "z"],
@@ -799,7 +918,7 @@ function signaturesOf(cssProperties, propName) {
   }
   const props = cssProperties[propName];
   if (!props || props.length === 0) return [];
-  const scope = isDivideProp(propName) ? "divide:" : "";
+  const scope = isDivideProp(propName) ? "divide:" : isRingProp(propName) ? "ring:" : "";
   return [scope + [...props].sort().join(",")];
 }
 var rule5 = {
