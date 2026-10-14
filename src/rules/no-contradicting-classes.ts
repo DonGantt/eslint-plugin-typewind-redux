@@ -13,6 +13,18 @@ function isDivideProp(n: string): boolean {
   return n === 'divide' || n.startsWith('divide_');
 }
 
+// ring-* and shadow-* both declare the same composite `box-shadow` property
+// (layering --tw-ring-shadow and --tw-shadow into one stacked value — verified
+// against real Tailwind v4 output: `.ring-1 { box-shadow: var(--tw-inset-shadow),
+// var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow),
+// var(--tw-shadow); }` and `.shadow-sm` emits the identical composite), so they
+// compose rather than override. Scoping ring-* by family keeps ring-vs-ring (and
+// shadow-vs-shadow, left unscoped) comparable to themselves without colliding
+// with each other.
+function isRingProp(n: string): boolean {
+  return n === 'ring' || n.startsWith('ring_');
+}
+
 // translate-x/y/z, rotate-x/y/z, skew-x/y, and scale-x/y/z are each one axis
 // of a shared composite property (translate, transform, scale respectively —
 // Tailwind v4 composes them via separate --tw-* channel variables), so e.g.
@@ -46,7 +58,7 @@ function signaturesOf(cssProperties: Record<string, string[]>, propName: string)
 
   const props = cssProperties[propName];
   if (!props || props.length === 0) return [];
-  const scope = isDivideProp(propName) ? 'divide:' : '';
+  const scope = isDivideProp(propName) ? 'divide:' : isRingProp(propName) ? 'ring:' : '';
   return [scope + [...props].sort().join(',')];
 }
 

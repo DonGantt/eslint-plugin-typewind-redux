@@ -44,6 +44,7 @@ export interface ChainItem {
 export interface ChainResult {
   items: ChainItem[];
   isTwRoot: boolean;
+  root: ASTNode | null;
 }
 
 export function collectChain(head: ASTNode, twLocalName: string): ChainResult {
@@ -59,13 +60,13 @@ export function collectChain(head: ASTNode, twLocalName: string): ChainResult {
 
   const isTwRoot = !!cur && cur.type === 'Identifier' && cur.name === twLocalName;
   items.reverse();
-  return { items, isTwRoot };
+  return { items, isTwRoot, root: cur };
 }
 
 export function walkTwChains(
   root: ASTNode,
   twLocalName: string,
-  onChain: (items: ChainItem[]) => void
+  onChain: (items: ChainItem[], chainRoot: ASTNode | null) => void
 ): void {
   const visited = new Set<ASTNode>();
 
@@ -78,10 +79,10 @@ export function walkTwChains(
     const node = value;
 
     if (isChainLink(node) && !visited.has(node)) {
-      const { items, isTwRoot } = collectChain(node, twLocalName);
+      const { items, isTwRoot, root: chainRoot } = collectChain(node, twLocalName);
       items.forEach(({ node: n }) => visited.add(n));
 
-      if (isTwRoot) onChain(items);
+      if (isTwRoot) onChain(items, chainRoot);
 
       for (const { node: itemNode } of items) {
         if (itemNode.type === 'CallExpression') {
@@ -101,23 +102,6 @@ export function walkTwChains(
   }
 
   walk(root);
-}
-
-export function splitRuns(items: ChainItem[]): ASTNode[][] {
-  const runs: ASTNode[][] = [];
-  let run: ASTNode[] = [];
-
-  for (const { node, isCallCallee } of items) {
-    if (!isCallCallee && isPlainPropAccess(node)) {
-      run.push(node);
-    } else if (run.length > 0) {
-      runs.push(run);
-      run = [];
-    }
-  }
-  if (run.length > 0) runs.push(run);
-
-  return runs;
 }
 
 export function splitScopes(items: ChainItem[]): ASTNode[][] {
