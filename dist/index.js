@@ -676,7 +676,7 @@ function firstBareOrderOf(argNode, twLocalName, orderMap) {
   if (!isTwRoot || !first || first.isCallCallee || !isPlainPropAccess(first.node)) {
     return Number.MAX_SAFE_INTEGER;
   }
-  const name = first.node.property.name;
+  const name = first.node.property.name.replace(/\$$/, "");
   return orderMap.get(name) ?? Number.MAX_SAFE_INTEGER;
 }
 function buildUnits(items, chainStart, twLocalName, orderMap, variantOrderMap) {
@@ -724,6 +724,15 @@ function buildUnits(items, chainStart, twLocalName, orderMap, variantOrderMap) {
     if (!cur.isCallCallee && isPlainPropAccess(node)) {
       const next = items[i + 1];
       if (next && !next.isCallCallee && isComputedBracket(next.node)) {
+        const propName = node.property.name;
+        if (propName.endsWith("$")) {
+          const order2 = orderMap.get(propName.slice(0, -1));
+          if (order2 !== void 0) {
+            push([node, next.node], "bare", NEGATIVE_SENTINEL, order2);
+            i += 2;
+            continue;
+          }
+        }
         push([node, next.node], "boundary", 0, 0);
         i += 2;
         continue;
